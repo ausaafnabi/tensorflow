@@ -17,9 +17,9 @@ limitations under the License.
 
 #include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/OperationSupport.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
 #include "tensorflow/compiler/mlir/xla/hlo_function_importer.h"
@@ -29,6 +29,12 @@ limitations under the License.
 #include "tensorflow/compiler/xla/xla.pb.h"
 
 namespace xla {
+
+HloModuleImporter::HloModuleImporter(mlir::ModuleOp module)
+    : module_(module), builder_(module.getContext()) {
+  module.getContext()->loadDialect<mlir::StandardOpsDialect>();
+  module.getContext()->loadDialect<mlir::mhlo::MhloDialect>();
+}
 
 Status HloModuleImporter::Import(const xla::HloModule& module) {
   // TODO(hinsu): Only import the entry computation here once all HLO ops with

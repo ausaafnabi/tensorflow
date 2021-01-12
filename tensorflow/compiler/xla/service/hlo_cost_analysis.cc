@@ -396,8 +396,11 @@ Status HloCostAnalysis::HandleReduceWindow(
   for (const auto& dimension : window.dimensions()) {
     window_element_count *= dimension.size();
   }
+
   const int64 output_element_count =
-      ShapeUtil::ElementsIn(reduce_window->shape());
+      ShapeUtil::ElementsIn(reduce_window->shape().IsArray()
+                                ? reduce_window->shape()
+                                : reduce_window->shape().tuple_shapes(0));
   const int64 reduction_count =
       (window_element_count - 1) * output_element_count;
   for (const auto& property : sub_properties) {
@@ -483,6 +486,10 @@ Status HloCostAnalysis::HandleRecvDone(const HloInstruction*) {
 }
 
 Status HloCostAnalysis::HandleReshape(const HloInstruction*) {
+  return Status::OK();
+}
+
+Status HloCostAnalysis::HandleDynamicReshape(const HloInstruction*) {
   return Status::OK();
 }
 

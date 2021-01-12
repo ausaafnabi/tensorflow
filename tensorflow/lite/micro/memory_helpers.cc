@@ -66,6 +66,9 @@ TfLiteStatus TfLiteTypeSizeOf(TfLiteType type, size_t* size) {
     case kTfLiteInt64:
       *size = sizeof(int64_t);
       break;
+    case kTfLiteUInt64:
+      *size = sizeof(uint64_t);
+      break;
     case kTfLiteBool:
       *size = sizeof(bool);
       break;
@@ -131,7 +134,7 @@ TfLiteStatus AllocateOutputDimensionsFromInput(TfLiteContext* context,
   input = input1->dims->size > input2->dims->size ? input1 : input2;
   TF_LITE_ENSURE(context, output->type == input->type);
 
-  size_t size;
+  size_t size = 0;
   TfLiteTypeSizeOf(input->type, &size);
   const int dimensions_count = tflite::GetTensorShape(input).DimensionsCount();
   for (int i = 0; i < dimensions_count; i++) {

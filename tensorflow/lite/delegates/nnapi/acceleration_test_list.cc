@@ -46,7 +46,6 @@ const constexpr char* NnapiAccelerationTestParams::kAccelerationTestConfig =
 #test-id,min-android-sdk-version
 
 # activations_test
-QuantizedActivationsOpTest/Relu6Uint8
 FloatActivationsOpTest/Softmax[13]D,29
 QuantizedActivationsOpTest/Softmax[13]D.+nt8,29
 FloatActivationsOpTest/Softmax\dD
@@ -60,7 +59,7 @@ FloatActivationsOpTest/Elu,30
 FloatActivationsOpTest/HardSwish
 QuantizedActivationsOpTest/HardSwish
 QuantizedActivationsOpTest/HardSwishBias
-QuantizedActivationsOpTest/Relu*
+QuantizedActivationsOpTest/Relu.+nt8
 QuantizedActivationsOpTest/PRelu,29
 QuantizedActivationsOpTest/PReluSameShapes,29
 QuantizedActivationsOpTest/PReluInt8.+,30
@@ -161,7 +160,7 @@ DepthToSpaceOpModel/int8
 FloatDivOpTest/.+
 
 # elementwise_test
-ElementWise/Abs
+ElementWise/Abs,29
 ElementWise/Sin,29
 ElementWise/Log,29
 ElementWise/Sqrt,29
@@ -214,6 +213,7 @@ TypesGatherOpTest/Float32Int32,29
 TypesGatherOpTest/Int32Int32,29
 TypesGatherOpTest/Uint8Int32,29
 TypesGatherOpTest/Int8Int32,29
+-TypesGatherOpTest/.*Int16.*
 
 # hashtable_lookup_test
 # All test excepted the string one should be accelerated
@@ -306,8 +306,13 @@ PowOpModel/.+,29
 # quant_basic_lstm_test
 QuantizedLstmTest/BasicQuantizedLstmTest/29
 
+# quantized_lstm op test
+IntegerLstmOpTest/NoCifg_NoPeephole_Projection_LayerNorm,30
+
 # quantize_test
 QuantizeOpTest/UINT8,29
+QuantizeOpTest/UInt8UInt8.+,29
+QuantizeOpTest/Int8Int8.+,30
 QuantizeOpTest/INT8,30
 
 # rank
@@ -329,10 +334,11 @@ ConstFloat(Mean|Any)OpTest/KeepDims
 ConstFloat(Sum|Prod|Max|Min)OpTest/ScalarAxis,29
 
 # reshape_test
-# Acceleration would be only for the test with shape being a constant tensor
-VariedShapeSpec/ReshapeOpTest/InvalidShape/1
-VariedShapeSpec/ReshapeOpTest/RegularShapes/1
-VariedShapeSpec/ReshapeOpTest/WithStretchDimension/1
+# Acceleration would be only for the test with shape being a constant tensor or
+# as hardcoded options.
+VariedShapeSpec/ReshapeOpTest/InvalidShape/[01]
+VariedShapeSpec/ReshapeOpTest/RegularShapes/[01]
+VariedShapeSpec/ReshapeOpTest/WithStretchDimension/[01]
 
 # resize_bilinear_test
 // align_corners & half_pixel_centers are not implemented in NNAPI before API 30
@@ -344,6 +350,8 @@ ResizeBilinearOpTest/ResizeBilinearOpTest/.+/0,29
 // align_corners & half_pixel_centers are not implemented in NNAPI before API 30
 ResizeNearestNeighborOpTest/ResizeNearestNeighborOpTest.+AlignCorners.*/0,30
 ResizeNearestNeighborOpTest/ResizeNearestNeighborOpTest.+HalfPixelCenters.*/0,30
+// 16-bit tests are not supported
+-ResizeNearestNeighborOpTest.+Int16/.+
 // Only models with constant size tensor are accelerated
 ResizeNearestNeighborOpTest/ResizeNearestNeighborOpTest/.+/0,29
 
@@ -359,6 +367,7 @@ SelectOpTest/.+,29
 -SliceOpTest/SliceOpTest/SliceString/.+
 -SliceOpTest/SliceOpTest/SliceInt64/.+
 -SliceOpTest/SliceOpTest/SliceBool/.+
+-SliceOpTest/SliceOpTest/SliceInt16/.+
 # Only constant tensors
 SliceOpTest/SliceOpTest/.+/0,29
 
@@ -408,6 +417,7 @@ TopKV2OpTest/TopKV2OpTest/.+/0,29
 -TransposeTest/5DDividedIntoTwo2Ds.*
 -TransposeTest/Complex5DTest.*
 -TransposeTest/.+DynamicTensor
+-TransposeTest/TestRefOps4DInt16
 TransposeTest/.+
 
 # transpose_conv_test

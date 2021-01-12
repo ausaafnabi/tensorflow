@@ -21,6 +21,7 @@ from __future__ import print_function
 import numpy as np
 
 from tensorflow.python.eager import context
+from tensorflow.python.compat import compat
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
@@ -29,15 +30,15 @@ from tensorflow.python.keras import backend as K
 from tensorflow.python.keras.engine import base_preprocessing_layer
 from tensorflow.python.keras.engine.base_preprocessing_layer import PreprocessingLayer
 from tensorflow.python.keras.engine.input_spec import InputSpec
-from tensorflow.python.keras.utils import tf_utils
+from tensorflow.python.keras.utils import control_flow_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import gen_image_ops
 from tensorflow.python.ops import image_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import stateful_random_ops
 from tensorflow.python.ops import stateless_random_ops
-from tensorflow.python.ops import variables
 from tensorflow.python.util.tf_export import keras_export
 
 ResizeMethod = image_ops.ResizeMethod
@@ -74,7 +75,7 @@ class Resizing(PreprocessingLayer):
   Resize the batched image input to target height and width. The input should
   be a 4-D tensor in the format of NHWC.
 
-  Arguments:
+  Args:
     height: Integer, the height of the output shape.
     width: Integer, the width of the output shape.
     interpolation: String, the interpolation method. Defaults to `bilinear`.
@@ -95,7 +96,7 @@ class Resizing(PreprocessingLayer):
     self._interpolation_method = get_interpolation(interpolation)
     self.input_spec = InputSpec(ndim=4)
     super(Resizing, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('Resizing')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('Resizing').set(True)
 
   def call(self, inputs):
     outputs = image_ops.resize_images_v2(
@@ -134,7 +135,7 @@ class CenterCrop(PreprocessingLayer):
   If the input height/width is even and the target height/width is odd (or
   inversely), the input image is left-padded by 1 pixel.
 
-  Arguments:
+  Args:
     height: Integer, the height of the output shape.
     width: Integer, the width of the output shape.
     name: A string, the name of the layer.
@@ -145,7 +146,7 @@ class CenterCrop(PreprocessingLayer):
     self.target_width = width
     self.input_spec = InputSpec(ndim=4)
     super(CenterCrop, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('CenterCrop')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('CenterCrop').set(True)
 
   def call(self, inputs):
     inputs_shape = array_ops.shape(inputs)
@@ -206,7 +207,7 @@ class RandomCrop(PreprocessingLayer):
     4D tensor with shape:
     `(samples, target_height, target_width, channels)`.
 
-  Arguments:
+  Args:
     height: Integer, the height of the output shape.
     width: Integer, the width of the output shape.
     seed: Integer. Used to create a random seed.
@@ -220,7 +221,7 @@ class RandomCrop(PreprocessingLayer):
     self._rng = make_generator(self.seed)
     self.input_spec = InputSpec(ndim=4)
     super(RandomCrop, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomCrop')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('RandomCrop').set(True)
 
   def call(self, inputs, training=True):
     if training is None:
@@ -251,11 +252,11 @@ class RandomCrop(PreprocessingLayer):
       input_width_t = input_shape[W_AXIS]
       ratio_cond = (input_height_t / input_width_t > (self.height / self.width))
       # pylint: disable=g-long-lambda
-      resized_height = tf_utils.smart_cond(
+      resized_height = control_flow_util.smart_cond(
           ratio_cond,
           lambda: math_ops.cast(self.width * input_height_t / input_width_t,
                                 input_height_t.dtype), lambda: self.height)
-      resized_width = tf_utils.smart_cond(
+      resized_width = control_flow_util.smart_cond(
           ratio_cond, lambda: self.width,
           lambda: math_ops.cast(self.height * input_width_t / input_height_t,
                                 input_width_t.dtype))
@@ -272,8 +273,8 @@ class RandomCrop(PreprocessingLayer):
       outputs = array_ops.slice(resized_inputs, bbox_begin, bbox_size)
       return outputs
 
-    output = tf_utils.smart_cond(training, random_cropped_inputs,
-                                 resize_and_center_cropped_inputs)
+    output = control_flow_util.smart_cond(training, random_cropped_inputs,
+                                          resize_and_center_cropped_inputs)
     original_shape = inputs.shape.as_list()
     batch_size, num_channels = original_shape[0], original_shape[3]
     output_shape = [batch_size] + [self.height, self.width] + [num_channels]
@@ -315,7 +316,7 @@ class Rescaling(PreprocessingLayer):
   Output shape:
     Same as input.
 
-  Arguments:
+  Args:
     scale: Float, the scale to apply to the inputs.
     offset: Float, the offset to apply to the inputs.
     name: A string, the name of the layer.
@@ -325,7 +326,7 @@ class Rescaling(PreprocessingLayer):
     self.scale = scale
     self.offset = offset
     super(Rescaling, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('Rescaling')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('Rescaling').set(True)
 
   def call(self, inputs):
     dtype = self._compute_dtype
@@ -381,7 +382,7 @@ class RandomFlip(PreprocessingLayer):
                name=None,
                **kwargs):
     super(RandomFlip, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomFlip')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('RandomFlip').set(True)
     self.mode = mode
     if mode == HORIZONTAL:
       self.horizontal = True
@@ -413,8 +414,8 @@ class RandomFlip(PreprocessingLayer):
             flipped_outputs, self.seed)
       return flipped_outputs
 
-    output = tf_utils.smart_cond(training, random_flipped_inputs,
-                                 lambda: inputs)
+    output = control_flow_util.smart_cond(training, random_flipped_inputs,
+                                          lambda: inputs)
     output.set_shape(inputs.shape)
     return output
 
@@ -435,7 +436,7 @@ class RandomFlip(PreprocessingLayer):
 class RandomTranslation(PreprocessingLayer):
   """Randomly translate each image during training.
 
-  Arguments:
+  Args:
     height_factor: a float represented as fraction of value, or a tuple
       of size 2 representing lower and upper bound for shifting vertically.
       A negative value means shifting image up, while a positive value
@@ -468,6 +469,8 @@ class RandomTranslation(PreprocessingLayer):
     interpolation: Interpolation mode. Supported values: "nearest", "bilinear".
     seed: Integer. Used to create a random seed.
     name: A string, the name of the layer.
+    fill_value: a float represents the value to be filled outside the
+      boundaries when `fill_mode` is "constant".
 
   Input shape:
     4D tensor with shape: `(samples, height, width, channels)`,
@@ -489,6 +492,7 @@ class RandomTranslation(PreprocessingLayer):
                interpolation='bilinear',
                seed=None,
                name=None,
+               fill_value=0.0,
                **kwargs):
     self.height_factor = height_factor
     if isinstance(height_factor, (tuple, list)):
@@ -521,12 +525,14 @@ class RandomTranslation(PreprocessingLayer):
     check_fill_mode_and_interpolation(fill_mode, interpolation)
 
     self.fill_mode = fill_mode
+    self.fill_value = fill_value
     self.interpolation = interpolation
     self.seed = seed
     self._rng = make_generator(self.seed)
     self.input_spec = InputSpec(ndim=4)
     super(RandomTranslation, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomTranslation')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell(
+        'RandomTranslation').set(True)
 
   def call(self, inputs, training=True):
     if training is None:
@@ -558,10 +564,11 @@ class RandomTranslation(PreprocessingLayer):
           inputs,
           get_translation_matrix(translations),
           interpolation=self.interpolation,
-          fill_mode=self.fill_mode)
+          fill_mode=self.fill_mode,
+          fill_value=self.fill_value)
 
-    output = tf_utils.smart_cond(training, random_translated_inputs,
-                                 lambda: inputs)
+    output = control_flow_util.smart_cond(training, random_translated_inputs,
+                                          lambda: inputs)
     output.set_shape(inputs.shape)
     return output
 
@@ -573,6 +580,7 @@ class RandomTranslation(PreprocessingLayer):
         'height_factor': self.height_factor,
         'width_factor': self.width_factor,
         'fill_mode': self.fill_mode,
+        'fill_value': self.fill_value,
         'interpolation': self.interpolation,
         'seed': self.seed,
     }
@@ -616,6 +624,7 @@ def get_translation_matrix(translations, name=None):
 def transform(images,
               transforms,
               fill_mode='reflect',
+              fill_value=0.0,
               interpolation='bilinear',
               output_shape=None,
               name=None):
@@ -635,6 +644,8 @@ def transform(images,
       not backpropagated into transformation parameters.
     fill_mode: Points outside the boundaries of the input are filled according
       to the given mode (one of `{'constant', 'reflect', 'wrap', 'nearest'}`).
+    fill_value: a float represents the value to be filled outside the
+      boundaries when `fill_mode` is "constant".
     interpolation: Interpolation mode. Supported values: "nearest", "bilinear".
     output_shape: Output dimesion after the transform, [height, width]. If None,
       output is the same size as input image.
@@ -680,7 +691,7 @@ def transform(images,
         if output_shape_value is not None:
           output_shape = output_shape_value
 
-    output_shape = ops.convert_to_tensor_v2(
+    output_shape = ops.convert_to_tensor_v2_with_dispatch(
         output_shape, dtypes.int32, name='output_shape')
 
     if not output_shape.get_shape().is_compatible_with([2]):
@@ -688,8 +699,20 @@ def transform(images,
                        'new_height, new_width, instead got '
                        '{}'.format(output_shape))
 
-    return image_ops.image_projective_transform_v2(
-        images,
+    fill_value = ops.convert_to_tensor_v2_with_dispatch(
+        fill_value, dtypes.float32, name='fill_value')
+
+    if compat.forward_compatible(2020, 8, 5):
+      return gen_image_ops.ImageProjectiveTransformV3(
+          images=images,
+          output_shape=output_shape,
+          fill_value=fill_value,
+          transforms=transforms,
+          fill_mode=fill_mode.upper(),
+          interpolation=interpolation.upper())
+
+    return gen_image_ops.ImageProjectiveTransformV2(
+        images=images,
         output_shape=output_shape,
         transforms=transforms,
         fill_mode=fill_mode.upper(),
@@ -776,6 +799,8 @@ class RandomRotation(PreprocessingLayer):
     interpolation: Interpolation mode. Supported values: "nearest", "bilinear".
     seed: Integer. Used to create a random seed.
     name: A string, the name of the layer.
+    fill_value: a float represents the value to be filled outside the
+      boundaries when `fill_mode` is "constant".
 
   Input shape:
     4D tensor with shape: `(samples, height, width, channels)`,
@@ -795,6 +820,7 @@ class RandomRotation(PreprocessingLayer):
                interpolation='bilinear',
                seed=None,
                name=None,
+               fill_value=0.0,
                **kwargs):
     self.factor = factor
     if isinstance(factor, (tuple, list)):
@@ -808,12 +834,14 @@ class RandomRotation(PreprocessingLayer):
                        'got {}'.format(factor))
     check_fill_mode_and_interpolation(fill_mode, interpolation)
     self.fill_mode = fill_mode
+    self.fill_value = fill_value
     self.interpolation = interpolation
     self.seed = seed
     self._rng = make_generator(self.seed)
     self.input_spec = InputSpec(ndim=4)
     super(RandomRotation, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomRotation')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell(
+        'RandomRotation').set(True)
 
   def call(self, inputs, training=True):
     if training is None:
@@ -833,10 +861,11 @@ class RandomRotation(PreprocessingLayer):
           inputs,
           get_rotation_matrix(angles, img_hd, img_wd),
           fill_mode=self.fill_mode,
+          fill_value=self.fill_value,
           interpolation=self.interpolation)
 
-    output = tf_utils.smart_cond(training, random_rotated_inputs,
-                                 lambda: inputs)
+    output = control_flow_util.smart_cond(training, random_rotated_inputs,
+                                          lambda: inputs)
     output.set_shape(inputs.shape)
     return output
 
@@ -847,6 +876,7 @@ class RandomRotation(PreprocessingLayer):
     config = {
         'factor': self.factor,
         'fill_mode': self.fill_mode,
+        'fill_value': self.fill_value,
         'interpolation': self.interpolation,
         'seed': self.seed,
     }
@@ -858,7 +888,7 @@ class RandomRotation(PreprocessingLayer):
 class RandomZoom(PreprocessingLayer):
   """Randomly zoom each image during training.
 
-  Arguments:
+  Args:
     height_factor: a float represented as fraction of value, or a tuple
       of size 2 representing lower and upper bound for zooming vertically.
       When represented as a single float, this value is used for both the
@@ -891,6 +921,8 @@ class RandomZoom(PreprocessingLayer):
     interpolation: Interpolation mode. Supported values: "nearest", "bilinear".
     seed: Integer. Used to create a random seed.
     name: A string, the name of the layer.
+    fill_value: a float represents the value to be filled outside the
+      boundaries when `fill_mode` is "constant".
 
   Example:
 
@@ -913,7 +945,6 @@ class RandomZoom(PreprocessingLayer):
       negative.
   """
 
-  # TODO(b/156526279): Add `fill_value` argument.
   def __init__(self,
                height_factor,
                width_factor=None,
@@ -921,6 +952,7 @@ class RandomZoom(PreprocessingLayer):
                interpolation='bilinear',
                seed=None,
                name=None,
+               fill_value=0.0,
                **kwargs):
     self.height_factor = height_factor
     if isinstance(height_factor, (tuple, list)):
@@ -950,12 +982,13 @@ class RandomZoom(PreprocessingLayer):
     check_fill_mode_and_interpolation(fill_mode, interpolation)
 
     self.fill_mode = fill_mode
+    self.fill_value = fill_value
     self.interpolation = interpolation
     self.seed = seed
     self._rng = make_generator(self.seed)
     self.input_spec = InputSpec(ndim=4)
     super(RandomZoom, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomZoom')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('RandomZoom').set(True)
 
   def call(self, inputs, training=True):
     if training is None:
@@ -982,12 +1015,14 @@ class RandomZoom(PreprocessingLayer):
           array_ops.concat([width_zoom, height_zoom], axis=1),
           dtype=dtypes.float32)
       return transform(
-          inputs, get_zoom_matrix(zooms, img_hd, img_wd),
+          inputs,
+          get_zoom_matrix(zooms, img_hd, img_wd),
           fill_mode=self.fill_mode,
+          fill_value=self.fill_value,
           interpolation=self.interpolation)
 
-    output = tf_utils.smart_cond(training, random_zoomed_inputs,
-                                 lambda: inputs)
+    output = control_flow_util.smart_cond(training, random_zoomed_inputs,
+                                          lambda: inputs)
     output.set_shape(inputs.shape)
     return output
 
@@ -999,6 +1034,7 @@ class RandomZoom(PreprocessingLayer):
         'height_factor': self.height_factor,
         'width_factor': self.width_factor,
         'fill_mode': self.fill_mode,
+        'fill_value': self.fill_value,
         'interpolation': self.interpolation,
         'seed': self.seed,
     }
@@ -1092,7 +1128,8 @@ class RandomContrast(PreprocessingLayer):
     self.seed = seed
     self.input_spec = InputSpec(ndim=4)
     super(RandomContrast, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomContrast')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell(
+        'RandomContrast').set(True)
 
   def call(self, inputs, training=True):
     if training is None:
@@ -1102,8 +1139,8 @@ class RandomContrast(PreprocessingLayer):
       return image_ops.random_contrast(inputs, 1. - self.lower, 1. + self.upper,
                                        self.seed)
 
-    output = tf_utils.smart_cond(training, random_contrasted_inputs,
-                                 lambda: inputs)
+    output = control_flow_util.smart_cond(training, random_contrasted_inputs,
+                                          lambda: inputs)
     output.set_shape(inputs.shape)
     return output
 
@@ -1128,7 +1165,7 @@ class RandomHeight(PreprocessingLayer):
 
   By default, this layer is inactive during inference.
 
-  Arguments:
+  Args:
     factor: A positive float (fraction of original height), or a tuple of size 2
       representing lower and upper bound for resizing vertically. When
       represented as a single float, this value is used for both the upper and
@@ -1176,7 +1213,7 @@ class RandomHeight(PreprocessingLayer):
     self.seed = seed
     self._rng = make_generator(self.seed)
     super(RandomHeight, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomHeight')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('RandomHeight').set(True)
 
   def call(self, inputs, training=True):
     if training is None:
@@ -1200,7 +1237,8 @@ class RandomHeight(PreprocessingLayer):
       output.set_shape(output_shape)
       return output
 
-    return tf_utils.smart_cond(training, random_height_inputs, lambda: inputs)
+    return control_flow_util.smart_cond(training, random_height_inputs,
+                                        lambda: inputs)
 
   def compute_output_shape(self, input_shape):
     input_shape = tensor_shape.TensorShape(input_shape).as_list()
@@ -1226,7 +1264,7 @@ class RandomWidth(PreprocessingLayer):
 
   By default, this layer is inactive during inference.
 
-  Arguments:
+  Args:
     factor: A positive float (fraction of original height), or a tuple of size 2
       representing lower and upper bound for resizing vertically. When
       represented as a single float, this value is used for both the upper and
@@ -1275,7 +1313,7 @@ class RandomWidth(PreprocessingLayer):
     self.seed = seed
     self._rng = make_generator(self.seed)
     super(RandomWidth, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('RandomWidth')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('RandomWidth').set(True)
 
   def call(self, inputs, training=True):
     if training is None:
@@ -1299,7 +1337,8 @@ class RandomWidth(PreprocessingLayer):
       output.set_shape(output_shape)
       return output
 
-    return tf_utils.smart_cond(training, random_width_inputs, lambda: inputs)
+    return control_flow_util.smart_cond(training, random_width_inputs,
+                                        lambda: inputs)
 
   def compute_output_shape(self, input_shape):
     input_shape = tensor_shape.TensorShape(input_shape).as_list()
@@ -1316,44 +1355,20 @@ class RandomWidth(PreprocessingLayer):
     return dict(list(base_config.items()) + list(config.items()))
 
 
-# TODO(b/147877541, b/158339556): This class is added to temporarily enable
-# creating generators within distribution strategies. Remove it when the proper
-# API is in place.
-class _RandomGenerator(stateful_random_ops.Generator):
-  """A subclass that allows creation inside distribution strategies.
-
-  This is a temporary solution to allow creating tf.random.Generator inside
-  distribution strategies. It will be removed when proper API is in place.
-
-  All replicas will have the same RNG state and generate the same random
-  numbers.
-  """
-
-  # TODO(b/157995497): Temporarily use primary variable handle inside cross
-  # replica context.
-  @property
-  def state(self):
-    """The internal state of the RNG."""
-    state_var = self._state_var
-    try:
-      _ = getattr(state_var, 'handle')
-      return state_var
-    except ValueError:
-      return state_var.values[0]
-
-  def _create_variable(self, *args, **kwargs):
-    # This function does the same thing as the base class's namesake, except
-    # that it skips the distribution-strategy check. When we are inside a
-    # distribution-strategy scope, variables.Variable will pick a proper
-    # variable class (e.g. MirroredVariable).
-    return variables.Variable(*args, **kwargs)
-
-
 def make_generator(seed=None):
+  """Creates a random generator.
+
+  Args:
+    seed: the seed to initialize the generator. If None, the generator will be
+      initialized non-deterministically.
+
+  Returns:
+    A generator object.
+  """
   if seed:
-    return _RandomGenerator.from_seed(seed)
+    return stateful_random_ops.Generator.from_seed(seed)
   else:
-    return _RandomGenerator.from_non_deterministic_state()
+    return stateful_random_ops.Generator.from_non_deterministic_state()
 
 
 def get_interpolation(interpolation):

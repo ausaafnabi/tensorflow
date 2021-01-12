@@ -79,10 +79,7 @@ def ResNet(stack_fn,
   Note that the data format convention used by the model is
   the one specified in your Keras config at `~/.keras/keras.json`.
 
-  Caution: Be sure to properly pre-process your inputs to the application.
-  Please see `applications.resnet.preprocess_input` for an example.
-
-  Arguments:
+  Args:
     stack_fn: a function that returns output tensor for the
       stacked residual blocks.
     preact: whether to use pre-activation or not
@@ -137,7 +134,7 @@ def ResNet(stack_fn,
     layers = VersionAwareLayers()
   if kwargs:
     raise ValueError('Unknown argument(s): %s' % (kwargs,))
-  if not (weights in {'imagenet', None} or file_io.file_exists(weights)):
+  if not (weights in {'imagenet', None} or file_io.file_exists_v2(weights)):
     raise ValueError('The `weights` argument should be either '
                      '`None` (random initialization), `imagenet` '
                      '(pre-training on ImageNet), '
@@ -229,7 +226,7 @@ def ResNet(stack_fn,
 def block1(x, filters, kernel_size=3, stride=1, conv_shortcut=True, name=None):
   """A residual block.
 
-  Arguments:
+  Args:
     x: input tensor.
     filters: integer, filters of the bottleneck layer.
     kernel_size: default 3, kernel size of the bottleneck layer.
@@ -274,7 +271,7 @@ def block1(x, filters, kernel_size=3, stride=1, conv_shortcut=True, name=None):
 def stack1(x, filters, blocks, stride1=2, name=None):
   """A set of stacked residual blocks.
 
-  Arguments:
+  Args:
     x: input tensor.
     filters: integer, filters of the bottleneck layer in a block.
     blocks: integer, blocks in the stacked blocks.
@@ -293,7 +290,7 @@ def stack1(x, filters, blocks, stride1=2, name=None):
 def block2(x, filters, kernel_size=3, stride=1, conv_shortcut=False, name=None):
   """A residual block.
 
-  Arguments:
+  Args:
       x: input tensor.
       filters: integer, filters of the bottleneck layer.
       kernel_size: default 3, kernel size of the bottleneck layer.
@@ -342,7 +339,7 @@ def block2(x, filters, kernel_size=3, stride=1, conv_shortcut=False, name=None):
 def stack2(x, filters, blocks, stride1=2, name=None):
   """A set of stacked residual blocks.
 
-  Arguments:
+  Args:
       x: input tensor.
       filters: integer, filters of the bottleneck layer in a block.
       blocks: integer, blocks in the stacked blocks.
@@ -368,7 +365,7 @@ def block3(x,
            name=None):
   """A residual block.
 
-  Arguments:
+  Args:
     x: input tensor.
     filters: integer, filters of the bottleneck layer.
     kernel_size: default 3, kernel size of the bottleneck layer.
@@ -431,7 +428,7 @@ def block3(x,
 def stack3(x, filters, blocks, stride1=2, groups=32, name=None):
   """A set of stacked residual blocks.
 
-  Arguments:
+  Args:
     x: input tensor.
     filters: integer, filters of the bottleneck layer in a block.
     blocks: integer, blocks in the stacked blocks.
@@ -545,11 +542,12 @@ DOC = """
   Optionally loads weights pre-trained on ImageNet.
   Note that the data format convention used by the model is
   the one specified in your Keras config at `~/.keras/keras.json`.
-  
-  Caution: Be sure to properly pre-process your inputs to the application.
-  Please see `applications.resnet.preprocess_input` for an example.
 
-  Arguments:
+  Note: each Keras Application expects a specific kind of input preprocessing.
+  For ResNet, call `tf.keras.applications.resnet.preprocess_input` on your
+  inputs before passing them to the model.
+
+  Args:
     include_top: whether to include the fully-connected
       layer at the top of the network.
     weights: one of `None` (random initialization),

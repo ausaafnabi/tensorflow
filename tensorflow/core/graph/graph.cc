@@ -82,6 +82,8 @@ Node::NodeClass Node::GetNodeClassForOp(const string& ts) {
           {"StatelessIf", NC_IF},
           {"While", NC_WHILE},
           {"StatelessWhile", NC_WHILE},
+          {"Case", NC_CASE},
+          {"StatelessCase", NC_CASE},
           // Not using the constants defined in FunctionLibraryDefinition
           // for the
           // 4 ops below because android inference library does not link
@@ -452,6 +454,7 @@ Node* Graph::CopyNode(const Node* node) {
     copy->MaybeCopyOnWrite();
     copy->props_->op_def = op_def;
   }
+  copy->SetStackTrace(node->GetStackTrace());
 
   return copy;
 }

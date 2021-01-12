@@ -24,11 +24,10 @@ limitations under the License.
 #include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/Function.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
-#include "mlir/IR/Module.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
@@ -36,21 +35,15 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
-#include "tensorflow/compiler/mlir/tensorflow/utils/mangling_util.h"
-#include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace mlir {
 namespace TF {
 namespace collection_ops_util {
 
-Value CreateScalarConst(int value, OpBuilder builder, Location loc) {
-  tensorflow::Tensor scalar_tensor(tensorflow::DT_INT32, {});
-  scalar_tensor.scalar<tensorflow::int32>()() = value;
-  return builder.create<TF::ConstOp>(
-      loc, tensorflow::ConvertTensor(scalar_tensor, &builder).ValueOrDie());
+Value CreateScalarConst(int32_t value, OpBuilder builder, Location loc) {
+  auto attr = DenseIntElementsAttr::get(
+      RankedTensorType::get({}, builder.getI32Type()), value);
+  return builder.create<TF::ConstOp>(loc, attr);
 }
 
 Value GetR1Const(ArrayRef<int64_t> r1, OpBuilder builder, Location loc,
@@ -60,7 +53,7 @@ Value GetR1Const(ArrayRef<int64_t> r1, OpBuilder builder, Location loc,
   values.reserve(rank);
   for (int i = 0; i < rank; ++i) values.push_back(APInt(bitwidth, r1[i]));
   auto result_type = RankedTensorType::get(
-      {rank}, IntegerType::get(bitwidth, builder.getContext()));
+      {rank}, IntegerType::get(builder.getContext(), bitwidth));
   return builder.create<TF::ConstOp>(
       loc, DenseElementsAttr::get(result_type, values));
 }
@@ -181,14 +174,14 @@ llvm::Optional<RankedTensorType> GetElementTypeFromAccess(
     llvm::function_ref<llvm::Optional<Type>(Operation*)> infer_from_op) {
   for (auto& use : collection.getUses()) {
     if (auto while_op = llvm::dyn_cast<TF::WhileOp>(use.getOwner())) {
-      auto body = module.lookupSymbol<FuncOp>(while_op.body());
+      auto body = while_op.body_function();
       assert(body);
       auto type_from_body = GetElementTypeFromAccess(
           body.getArgument(use.getOperandNumber()), module, infer_from_op);
       if (type_from_body.hasValue()) return type_from_body;
     } else if (auto if_op = llvm::dyn_cast<TF::IfOp>(use.getOwner())) {
-      auto then_branch = module.lookupSymbol<FuncOp>(if_op.then_branch());
-      auto else_branch = module.lookupSymbol<FuncOp>(if_op.else_branch());
+      auto then_branch = if_op.then_function();
+      auto else_branch = if_op.else_function();
       assert(then_branch && else_branch);
       auto type_from_then = GetElementTypeFromAccess(
           then_branch.getArgument(use.getOperandNumber() - 1), module,
@@ -198,18 +191,8 @@ llvm::Optional<RankedTensorType> GetElementTypeFromAccess(
           else_branch.getArgument(use.getOperandNumber() - 1), module,
           infer_from_op);
       if (type_from_else.hasValue()) return type_from_else;
-    } else if (auto pcall =
-                   llvm::dyn_cast<TF::PartitionedCallOp>(use.getOwner())) {
-      if (!pcall.f().isa<FlatSymbolRefAttr>()) continue;
-      auto callee = module.lookupSymbol<FuncOp>(pcall.f().getRootReference());
-      assert(callee);
-      auto type_from_callee = GetElementTypeFromAccess(
-          callee.getArgument(use.getOperandNumber()), module, infer_from_op);
-      if (type_from_callee.hasValue()) return type_from_callee;
-    } else if (auto spcall = llvm::dyn_cast<TF::StatefulPartitionedCallOp>(
-                   use.getOwner())) {
-      auto callee = module.lookupSymbol<FuncOp>(spcall.f());
-      assert(callee);
+    } else if (auto call = llvm::dyn_cast<CallOpInterface>(use.getOwner())) {
+      auto callee = dyn_cast<FuncOp>(call.resolveCallable());
       auto type_from_callee = GetElementTypeFromAccess(
           callee.getArgument(use.getOperandNumber()), module, infer_from_op);
       if (type_from_callee.hasValue()) return type_from_callee;

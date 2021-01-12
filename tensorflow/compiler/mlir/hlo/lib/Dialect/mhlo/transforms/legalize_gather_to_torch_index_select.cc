@@ -13,13 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "absl/memory/memory.h"
-#include "mlir/IR/Function.h"  // from @llvm-project
-#include "mlir/IR/PatternMatch.h"  // from @llvm-project
-#include "mlir/Pass/Pass.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/transforms/passes.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
+#include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/passes.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 
@@ -128,13 +127,13 @@ struct GatherIsTorchIndexSelect : public OpRewritePattern<GatherOp> {
   }
 };
 
-struct LegalizeGatherToTorchIndexSelect
-    : public PassWrapper<LegalizeGatherToTorchIndexSelect, FunctionPass> {
+struct LegalizeGatherToTorchIndexSelectPass
+    : public PassWrapper<LegalizeGatherToTorchIndexSelectPass, FunctionPass> {
   /// Perform the lowering of standard dialect operations to approximations.
   void runOnFunction() override {
     OwningRewritePatternList patterns;
     PopulateGatherToTorchIndexSelectPatterns(&getContext(), &patterns);
-    applyPatternsAndFoldGreedily(getFunction(), patterns);
+    applyPatternsAndFoldGreedily(getFunction(), std::move(patterns));
   }
 };
 }  // namespace
@@ -144,9 +143,9 @@ void PopulateGatherToTorchIndexSelectPatterns(
   patterns->insert<GatherIsTorchIndexSelect>(context);
 }
 
-static PassRegistration<LegalizeGatherToTorchIndexSelect> legalize_hlo_pass(
-    "mhlo-legalize-gather-to-torch-index-select",
-    "Legalizes gathers to a torch index select.");
+std::unique_ptr<FunctionPass> createLegalizeGatherToTorchIndexSelectPass() {
+  return std::make_unique<LegalizeGatherToTorchIndexSelectPass>();
+}
 
 }  // namespace mhlo
 }  // namespace mlir

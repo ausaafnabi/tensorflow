@@ -64,9 +64,11 @@ cc_library(
         ":delegate_provider_hdr",
         "//tensorflow/lite/tools/evaluation:utils",
     ] + select({
-        "//tensorflow:android": [
+        "//tensorflow/lite/delegates/gpu:supports_gpu_delegate": [
             "//tensorflow/lite/delegates/gpu:delegate",
         ],
+        "//conditions:default": [],
+    }) + select({
         "//tensorflow:ios": [
             "//tensorflow/lite/delegates/gpu:metal_delegate",
         ],
@@ -121,7 +123,7 @@ cc_library(
         "//tensorflow/lite/tools/evaluation:utils",
     ] + select({
         "//tensorflow:ios": [
-            "//tensorflow/lite/experimental/delegates/coreml:coreml_delegate",
+            "//tensorflow/lite/delegates/coreml:coreml_delegate",
         ],
         "//conditions:default": [],
     }),

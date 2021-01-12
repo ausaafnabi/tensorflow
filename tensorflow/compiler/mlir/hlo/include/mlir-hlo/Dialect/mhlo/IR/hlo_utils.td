@@ -27,6 +27,9 @@ def CastIntElementsAttr : NativeCodeCall<"$0.cast<DenseIntElementsAttr>()">;
 class ConstantSplat<string value> : NativeCodeCall<
     "hlo::getSplat(&$_builder, $0, " # value # ")">;
 
+class HLO_ConstantLike<string value> : NativeCodeCall<
+    "chlo::getConstantLike($_builder, $_loc, " # value # ", $0)">;
+
 def NullDenseIntElementsAttr : NativeCodeCall<"DenseIntElementsAttr()">;
 
 def BinBroadcastDimensions : NativeCodeCall<
@@ -39,5 +42,9 @@ def BinBroadcastDimensionsNonEmpty : NativeCodeCall<
 // 32 bit integers are supported for the value.
 class GetScalarOfType<int value> : NativeCodeCall<
   "hlo::GetScalarOfType(getElementTypeOrSelf($0)," # value # ")">;
+
+// Constraint that Attr has values [0, 1, ...].
+def IdentityBroadcastDims : AttrConstraint<
+    CPred<"hlo::IsSequenceStartingWith0($_self)">>;
 
 #endif // HLO_UTILS

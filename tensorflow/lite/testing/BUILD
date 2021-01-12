@@ -12,7 +12,6 @@ load("//tensorflow/lite/testing:tflite_model_test.bzl", "tflite_model_test")
 load("//tensorflow:tensorflow.bzl", "pybind_extension")
 load(
     "//tensorflow:tensorflow.bzl",
-    "py_test",  # @unused
     "tf_cc_binary",
     "tf_cc_test",
 )
@@ -35,7 +34,19 @@ exports_files([
     name = "zip_test_%s" % test_name,
     size = "medium",
     srcs = ["generated_examples_zip_test.cc"],
-    args = args + select({
+    additional_test_tags_args = {
+        "xnnpack": (
+            # TODO(b/162696268): remove 'notap' once the bug is fixed.
+            ["notap"],
+            ["--use_xnnpack=true"],
+        ),
+    },
+    conversion_mode = conversion_mode,
+    data = [
+        ":zip_%s" % test_name,
+    ],
+    shard_count = 20,
+    test_args = args + select({
         "//tensorflow:android": [],
         "//conditions:default": [
             "--zip_file_path=$(location :zip_%s)" % test_name,
@@ -44,27 +55,23 @@ exports_files([
             "--unzip_binary_path=/usr/bin/unzip",
         ],
     }),
-    conversion_mode = conversion_mode,
-    data = [
-        ":zip_%s" % test_name,
-    ],
-    shard_count = 20,
-    tags = tags + [
-        "gen_zip_test",
+    test_name = test_name,
+    test_tags = tags + [
         "no_gpu",  # Executing with TF GPU configurations is redundant.
         "no_oss",
         "tflite_not_portable_intentional",
     ],
-    test_name = test_name,
     deps = [
         ":parse_testdata_lib",
         ":tflite_driver",
+        ":tflite_driver_delegate_providers",
         ":util",
         "@com_google_googletest//:gtest",
         "@com_googlesource_code_re2//:re2",
         "//tensorflow/lite:builtin_op_data",
         "//tensorflow/lite:framework",
         "//tensorflow/lite/kernels:builtin_ops",
+        "//tensorflow/lite/kernels:test_delegate_providers_lib",
     ] + select({
         "//conditions:default": [
             "//tensorflow/core:framework_internal",
@@ -229,13 +236,32 @@ cc_library(
         "//tensorflow/lite:string_util",
         "//tensorflow/lite/kernels:builtin_ops",
         "//tensorflow/lite/kernels:custom_ops",
-        "//tensorflow/lite/kernels/hashtable:hashtable_op_kernels",
         "//tensorflow/lite/kernels:reference_ops",
+        "//tensorflow/lite/kernels:test_delegate_providers_lib",
+        "//tensorflow/lite/kernels/hashtable:hashtable_op_kernels",
+        "//tensorflow/lite/kernels/parse_example:parse_example",
+        "//tensorflow/lite/kernels/perception:perception_ops",
         "//tensorflow/lite/tools/evaluation:utils",
     ] + select({
         "//tensorflow:ios": [],
         "//conditions:default": ["//tensorflow/lite/delegates/flex:delegate"],
     }),
+)
+
+# A convenient library of tflite delegate execution providers for tests based
+# on the `tflite_driver` library.
+cc_library(
+    name = "tflite_driver_delegate_providers",
+    deps = [
+        "//tensorflow/lite/tools/delegates:coreml_delegate_provider",
+        "//tensorflow/lite/tools/delegates:default_execution_provider",
+        "//tensorflow/lite/tools/delegates:external_delegate_provider",
+        "//tensorflow/lite/tools/delegates:gpu_delegate_provider",
+        "//tensorflow/lite/tools/delegates:hexagon_delegate_provider",
+        "//tensorflow/lite/tools/delegates:nnapi_delegate_provider",
+        "//tensorflow/lite/tools/delegates:xnnpack_delegate_provider",
+    ],
+    alwayslink = 1,
 )
 
 tf_cc_test(
@@ -287,7 +313,7 @@ cc_library(
     hdrs = ["util.h"],
     deps = [
         "//tensorflow/core/platform:logging",
-        "//tensorflow/lite:framework",
+        "//tensorflow/lite:error_reporter",
         "//tensorflow/lite:string",
         "//tensorflow/lite/core/api",
     ],
@@ -536,9 +562,7 @@ cc_test(
     ],
     tags = [
         "no_mac",  # b/161990368
-        "noasan",  # b/162027436
-        "nomsan",  # b/162027436
-        "notsan",  # b/162027436
+        "tflite_not_portable",
     ],
     deps = [
         ":test_tflite_lib",
@@ -568,7 +592,7 @@ pybind_extension(
 tflite_portable_test_suite()
 
 tflite_custom_android_library(
-    name = "customtized_tflite_for_add_ops",
+    name = "customized_tflite_for_add_ops",
     models = ["//tensorflow/lite:testdata/add.bin"],
     visibility = ["//visibility:public"],
 )

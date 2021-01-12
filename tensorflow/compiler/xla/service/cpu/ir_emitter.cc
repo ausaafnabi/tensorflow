@@ -63,7 +63,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/buffer_assignment_util.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/dynamic_update_slice_util.h"
-#include "tensorflow/compiler/xla/service/llvm_ir/fused_ir_emitter.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/ir_array.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/llvm_loop.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/llvm_util.h"
@@ -449,7 +448,7 @@ Status IrEmitter::HandleInfeed(HloInstruction* instruction) {
 Status IrEmitter::EmitXfeedTransfer(XfeedKind kind, const Shape& shape,
                                     llvm::Value* program_buffer_address) {
   int64 length = ByteSizeOf(shape);
-  if (length <= 0 || length > std::numeric_limits<int32>::max()) {
+  if (length < 0 || length > std::numeric_limits<int32>::max()) {
     return InvalidArgument(
         "xfeed (infeed or outfeed) buffer length %d is outside the valid "
         "size range",
@@ -826,7 +825,8 @@ Status IrEmitter::HandleDot(HloInstruction* dot) {
   auto rhs = dot->operand(1);
   TF_RETURN_IF_ERROR(ElementTypesSameAndSupported(
       /*instruction=*/*dot, /*operands=*/{lhs, rhs},
-      /*supported_types=*/{S32, F16, F32, F64, C64, C128}));
+      /*supported_types=*/
+      {PRED, S8, U8, S16, U16, S32, U32, S64, U64, F16, F32, F64, C64, C128}));
   const DotDimensionNumbers& dnums = dot->dot_dimension_numbers();
 
   if (dnums.lhs_contracting_dimensions_size() != 1) {
@@ -1640,7 +1640,7 @@ IrEmitter::ShardedVectorType IrEmitter::CreateShardedVectorType(
 
     if (current_size_fragment >= vector_register_size_in_elements) {
       auto vector_type = llvm::VectorType::get(
-          element_ir_type, vector_register_size_in_elements);
+          element_ir_type, vector_register_size_in_elements, false);
       sharded_vector_type.insert(
           sharded_vector_type.end(),
           current_size_fragment / vector_register_size_in_elements,
@@ -1656,7 +1656,7 @@ IrEmitter::ShardedVectorType IrEmitter::CreateShardedVectorType(
     // of two are all legal vector sizes (or at least can be lowered easily by
     // LLVM).
     sharded_vector_type.push_back(
-        llvm::VectorType::get(element_ir_type, current_size_fragment));
+        llvm::VectorType::get(element_ir_type, current_size_fragment, false));
   }
   return sharded_vector_type;
 }
@@ -2200,20 +2200,21 @@ Status IrEmitter::HandleFusion(HloInstruction* fusion) {
   if (llvm_ir::CanEmitFusedDynamicUpdateSliceInPlace(fusion, assignment_)) {
     VLOG(3) << "HandleFusion FusedDynamicUpdateSliceInPlace";
     CpuElementalIrEmitter elemental_emitter(hlo_module_config_, this, module_);
+    FusedIrEmitter fused_emitter(&elemental_emitter);
+    BindFusionArguments(fusion, &fused_emitter);
+
     TF_RETURN_IF_ERROR(EmitTargetAddressForOp(fusion));
     // Delegate to common implementation of fused in-place dynamic-update-slice.
     return llvm_ir::EmitFusedDynamicUpdateSliceInPlace(
-        fusion, GetGeneratorForOperandIrArrays(fusion), GetIrArrayFor(fusion),
-        &elemental_emitter, &b_);
+        fusion, GetIrArrayFor(fusion), &fused_emitter, &b_);
   } else if (fusion->IsLoopFusion()) {
     VLOG(3) << "HandleFusion kLoop";
     CpuElementalIrEmitter elemental_emitter(hlo_module_config_, this, module_);
-    auto operands = GetIrArraysForOperandsOf(fusion);
-    FusedIrEmitter fused_emitter(GetGeneratorForOperandIrArrays(fusion),
-                                 &elemental_emitter);
-    TF_RETURN_IF_ERROR(fusion->fused_expression_root()->Accept(&fused_emitter));
-
-    return EmitTargetElementLoop(fusion, fused_emitter.GetRootGenerator());
+    FusedIrEmitter fused_emitter(&elemental_emitter);
+    BindFusionArguments(fusion, &fused_emitter);
+    TF_ASSIGN_OR_RETURN(auto generator, fused_emitter.GetGenerator(
+                                            fusion->fused_expression_root()));
+    return EmitTargetElementLoop(fusion, generator);
   } else if (fusion->IsOutputFusion()) {
     VLOG(3) << "HandleFusion kOutput";
     int64 dot_op_index = root->operand(0)->opcode() == HloOpcode::kDot ? 0 : 1;
@@ -2387,12 +2388,54 @@ Status IrEmitter::HandlePadToStatic(HloInstruction* hlo) {
   return Status::OK();
 }
 
+Status IrEmitter::HandleTopK(HloInstruction* hlo) {
+  TF_RETURN_IF_ERROR(EmitTargetAddressForOp(hlo));
+  const HloInstruction* input = hlo->operand(0);
+  const int64 k = hlo->shape().tuple_shapes(0).dimensions().back();
+  const bool has_batch = hlo->shape().tuple_shapes(0).dimensions_size() == 2;
+  TF_RET_CHECK(input->shape().element_type() == F32);
+  TF_RET_CHECK(LayoutUtil::IsMonotonicWithDim0Major(
+      hlo->shape().tuple_shapes(0).layout()));
+  TF_RET_CHECK(LayoutUtil::IsMonotonicWithDim0Major(
+      hlo->shape().tuple_shapes(1).layout()));
+  TF_RET_CHECK(
+      LayoutUtil::IsMonotonicWithDim0Major(hlo->operand(0)->shape().layout()));
+
+  TF_ASSIGN_OR_RETURN(const BufferAllocation::Slice values_slice,
+                      assignment_.GetUniqueSlice(hlo->operand(0), {}));
+  TF_ASSIGN_OR_RETURN(const BufferAllocation::Slice out_values_slice,
+                      assignment_.GetUniqueSlice(hlo, {0}));
+  TF_ASSIGN_OR_RETURN(const BufferAllocation::Slice out_indices_slice,
+                      assignment_.GetUniqueSlice(hlo, {1}));
+  llvm::Value* values_ptr =
+      EmitBufferPointer(values_slice, hlo->operand(0)->shape());
+  llvm::Value* out_values_ptr =
+      EmitBufferPointer(out_values_slice, hlo->shape().tuple_shapes(0));
+  llvm::Value* out_indices_ptr =
+      EmitBufferPointer(out_indices_slice, hlo->shape().tuple_shapes(1));
+  EmitCallToFunc(
+      runtime::kTopKF32SymbolName,
+      {b_.getInt64(has_batch ? input->shape().dimensions(0) : 1),
+       b_.getInt64(input->shape().dimensions().back()), b_.getInt64(k),
+       BitCast(values_ptr, b_.getFloatTy()->getPointerTo()),
+       BitCast(out_values_ptr, b_.getFloatTy()->getPointerTo()),
+       BitCast(out_indices_ptr, b_.getInt32Ty()->getPointerTo())},
+      b_.getVoidTy());
+
+  llvm_ir::EmitTuple(GetIrArrayFor(hlo), {out_values_ptr, out_indices_ptr},
+                     &b_);
+  return Status::OK();
+}
+
 Status IrEmitter::HandleCustomCall(HloInstruction* custom_call) {
   if (custom_call->custom_call_target() == "PadToStatic") {
     return HandlePadToStatic(custom_call);
   }
   if (custom_call->custom_call_target() == "SliceToDynamic") {
     return HandleSliceToDynamic(custom_call);
+  }
+  if (custom_call->custom_call_target() == "TopK") {
+    return HandleTopK(custom_call);
   }
   absl::Span<HloInstruction* const> operands(custom_call->operands());
   llvm::Type* i8_ptr_type = b_.getInt8PtrTy();
@@ -3407,6 +3450,18 @@ llvm::Value* IrEmitter::GetBufferForGlobalCallReturnValue(
   const BufferAllocation::Slice root_buffer =
       assignment_.GetUniqueTopLevelSlice(root_inst).ValueOrDie();
   return EmitBufferPointer(root_buffer, root_inst->shape());
+}
+
+void IrEmitter::BindFusionArguments(const HloInstruction* fusion,
+                                    FusedIrEmitter* fused_emitter) {
+  for (int i = 0; i < fusion->operand_count(); i++) {
+    const HloInstruction* operand = fusion->operand(i);
+    fused_emitter->BindGenerator(
+        fusion->fused_parameter(i),
+        [this, operand](llvm_ir::IrArray::Index index) {
+          return GetIrArrayFor(operand).EmitReadArrayElement(index, &b_);
+        });
+  }
 }
 
 }  // namespace cpu

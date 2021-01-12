@@ -25,18 +25,19 @@ import numpy as np
 from tensorflow.python import keras
 from tensorflow.python.compat import v2_compat
 from tensorflow.python.data.ops import dataset_ops
-from tensorflow.python.distribute import combinations
+from tensorflow.python.distribute import combinations as ds_combinations
+from tensorflow.python.distribute import multi_process_runner
 from tensorflow.python.distribute import reduce_util
-from tensorflow.python.distribute import strategy_combinations
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import def_function
-from tensorflow.python.eager import test
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import random_seed
-from tensorflow.python.framework import test_util
+from tensorflow.python.framework import test_combinations as combinations
 from tensorflow.python.keras.distribute import optimizer_combinations
+from tensorflow.python.keras.distribute import strategy_combinations
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn
+from tensorflow.python.platform import test
 
 _NUM_SAMPLES = 66
 _BATCH_SIZE = 32
@@ -224,7 +225,7 @@ class TestDistributionStrategyDnnCorrectness(test.TestCase,
     np.random.seed(_RANDOM_SEED)
     random_seed.set_random_seed(_RANDOM_SEED)
 
-  @combinations.generate(
+  @ds_combinations.generate(
       combinations.combine(
           distribution=strategy_combinations.all_strategies,
           optimizer_fn=optimizer_combinations.optimizers_v2,
@@ -234,8 +235,10 @@ class TestDistributionStrategyDnnCorrectness(test.TestCase,
           sync_batchnorm=[True, False]) +
       combinations.combine(
           distribution=strategy_combinations.multiworker_strategies,
-          optimizer_fn=
-          optimizer_combinations.gradient_descent_optimizer_keras_v2_fn,
+          optimizer_fn=[
+              optimizer_combinations.gradient_descent_optimizer_keras_v2_fn,
+              optimizer_combinations.adagrad_optimizer_keras_v2_fn
+          ],
           mode=['eager'],
           iteration_type=['iterator', 'dataset'],
           inside_func=[False, True],
@@ -247,14 +250,6 @@ class TestDistributionStrategyDnnCorrectness(test.TestCase,
     # TODO(anjs): Identify why this particular V1 optimizer needs a higher tol.
     if 'FtrlV1' in optimizer_fn._name and 'TPU' in type(distribution).__name__:
       self.skipTest('Reduced tolerance of the order of 1e-1 required.')
-    if ('CollectiveAllReduce' in type(distribution).__name__ and
-        test_util.is_xla_enabled()):
-      self.skipTest('XLA tests fail with MWMS.')
-    # Unable to use required_gpus to check if this is a multiGPU combination
-    # since required_gpus and NamedDistribution cannot be used together.
-    if ('CollectiveAllReduce' in type(distribution).__name__
-        and not inside_func and iteration_type == 'dataset'):
-      self.skipTest('MWMS tests fail with multiple GPUs.')
     self.dnn_correctness(distribution, optimizer_fn, iteration_type,
                          inside_func, sync_batchnorm)
 
@@ -280,4 +275,4 @@ class TestDistributionStrategyDnnCorrectness(test.TestCase,
 
 
 if __name__ == '__main__':
-  combinations.main()
+  multi_process_runner.test_main()

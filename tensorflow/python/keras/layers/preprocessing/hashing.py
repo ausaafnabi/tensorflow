@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Keras categorical preprocessing layers."""
+"""Keras hashing preprocessing layer."""
 # pylint: disable=g-classes-have-attributes
 from __future__ import absolute_import
 from __future__ import division
@@ -28,6 +28,7 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.keras.engine import base_preprocessing_layer
+from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.ops import gen_sparse_ops
 from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops import string_ops
@@ -112,7 +113,7 @@ class Hashing(base_preprocessing_layer.PreprocessingLayer):
 
   Reference: [SipHash with salt](https://www.131002.net/siphash/siphash.pdf)
 
-  Arguments:
+  Args:
     num_bins: Number of hash bins.
     salt: A single unsigned integer or None.
       If passed, the hash function used will be SipHash64, with these values
@@ -137,7 +138,7 @@ class Hashing(base_preprocessing_layer.PreprocessingLayer):
     if num_bins is None or num_bins <= 0:
       raise ValueError('`num_bins` cannot be `None` or non-positive values.')
     super(Hashing, self).__init__(name=name, **kwargs)
-    base_preprocessing_layer._kpl_gauge.get_cell('V2').set('Hashing')
+    base_preprocessing_layer.keras_kpl_gauge.get_cell('Hashing').set(True)
     self.num_bins = num_bins
     self.strong_hash = True if salt is not None else False
     if salt is not None:
@@ -153,14 +154,14 @@ class Hashing(base_preprocessing_layer.PreprocessingLayer):
 
   def _preprocess_single_input(self, inp):
     if isinstance(inp, (list, tuple, np.ndarray)):
-      inp = ops.convert_to_tensor(inp)
+      inp = ops.convert_to_tensor_v2_with_dispatch(inp)
     return inp
 
   def _preprocess_inputs(self, inputs):
     if isinstance(inputs, (tuple, list)):
       # If any of them is tensor or ndarray, then treat as list
       if any(
-          tensor_util.is_tensor(inp) or isinstance(inp, np.ndarray)
+          tensor_util.is_tf_type(inp) or isinstance(inp, np.ndarray)
           for inp in inputs):
         return [self._preprocess_single_input(inp) for inp in inputs]
     return self._preprocess_single_input(inputs)
@@ -183,7 +184,7 @@ class Hashing(base_preprocessing_layer.PreprocessingLayer):
       else:
         inputs = string_ops.as_string(inputs)
     str_to_hash_bucket = self._get_string_to_hash_bucket_fn()
-    if ragged_tensor.is_ragged(inputs):
+    if tf_utils.is_ragged(inputs):
       return ragged_functional_ops.map_flat_values(
           str_to_hash_bucket, inputs, num_buckets=self.num_bins, name='hash')
     elif isinstance(inputs, sparse_tensor.SparseTensor):
@@ -212,7 +213,7 @@ class Hashing(base_preprocessing_layer.PreprocessingLayer):
     indices = [sp_inp.indices for sp_inp in sparse_inputs]
     values = [sp_inp.values for sp_inp in sparse_inputs]
     shapes = [sp_inp.dense_shape for sp_inp in sparse_inputs]
-    indices_out, values_out, shapes_out = gen_sparse_ops.sparse_cross_hashed(
+    indices_out, values_out, shapes_out = gen_sparse_ops.SparseCrossHashed(
         indices=indices,
         values=values,
         shapes=shapes,

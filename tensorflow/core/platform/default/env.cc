@@ -149,9 +149,7 @@ class PosixEnv : public Env {
         return true;
       }
     }
-#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
-    return false;
-#else
+#if defined(__GLIBC__) || defined(__FreeBSD__)
     char buf[100];
 #ifdef __FreeBSD__
     int res = 0;
@@ -164,6 +162,8 @@ class PosixEnv : public Env {
     }
     *name = buf;
     return true;
+#else
+    return false;
 #endif
   }
 
@@ -185,8 +185,9 @@ class PosixEnv : public Env {
     });
   }
 
-  Status LoadLibrary(const char* library_filename, void** handle) override {
-    return tensorflow::internal::LoadLibrary(library_filename, handle);
+  Status LoadDynamicLibrary(const char* library_filename,
+                            void** handle) override {
+    return tensorflow::internal::LoadDynamicLibrary(library_filename, handle);
   }
 
   Status GetSymbolFromLibrary(void* handle, const char* symbol_name,

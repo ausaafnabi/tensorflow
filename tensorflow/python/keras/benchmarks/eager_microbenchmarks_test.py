@@ -23,22 +23,22 @@ import six
 import tensorflow as tf
 
 from tensorflow.python.eager import context
+from tensorflow.python.eager.context import get_executor
+from tensorflow.python.keras.utils import tf_inspect
 from tensorflow.python.platform import benchmark
-from tensorflow.python.util import tf_inspect
 
 
 def _run_benchmark(func, num_iters, execution_mode=None):
-  ctx = context.context()
   with context.execution_mode(execution_mode):
     # call func to warm up
     func()
     if execution_mode == context.ASYNC:
-      ctx.executor.wait()
+      get_executor().wait()
     start = time.time()
     for _ in range(num_iters):
       func()
     if execution_mode == context.ASYNC:
-      ctx.executor.wait()
+      get_executor().wait()
     end = time.time()
 
     return end - start
@@ -51,13 +51,19 @@ class MicroBenchmarksBase(tf.test.Benchmark):
     """Run and report benchmark results."""
     total_time = run_benchmark(func, num_iters, execution_mode)
     mean_us = total_time * 1e6 / num_iters
-    extras = {
-        "examples_per_sec": float("{0:.3f}".format(num_iters / total_time)),
-        "us_per_example": float("{0:.3f}".format(total_time * 1e6 / num_iters))
-    }
+    metrics = [{
+        "name": "exp_per_sec",
+        "value": float("{0:.3f}".format(num_iters / total_time))
+    }, {
+        "name": "us_per_exp",
+        "value": float("{0:.3f}".format(total_time * 1e6 / num_iters))
+    }]
     benchmark_name = self._get_benchmark_name()
     self.report_benchmark(
-        iters=num_iters, wall_time=mean_us, extras=extras, name=benchmark_name)
+        iters=num_iters,
+        wall_time=mean_us,
+        metrics=metrics,
+        name=benchmark_name)
 
   def _get_benchmark_name(self):
     """Mostly copied from benchmark.py _get_name()."""

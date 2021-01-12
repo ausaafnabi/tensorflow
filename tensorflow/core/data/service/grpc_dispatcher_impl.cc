@@ -17,32 +17,35 @@ limitations under the License.
 
 #include "grpcpp/server_context.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
-#include "tensorflow/core/protobuf/data/experimental/service_config.pb.h"
+#include "tensorflow/core/protobuf/service_config.pb.h"
 
 namespace tensorflow {
 namespace data {
 
 using ::grpc::ServerBuilder;
 using ::grpc::ServerContext;
-using ::grpc::Status;
 
 GrpcDispatcherImpl::GrpcDispatcherImpl(
-    ServerBuilder* server_builder, const experimental::DispatcherConfig& config)
+    const experimental::DispatcherConfig& config, ServerBuilder& server_builder)
     : impl_(config) {
-  server_builder->RegisterService(this);
+  server_builder.RegisterService(this);
   VLOG(1) << "Registered data service dispatcher";
 }
 
-#define HANDLER(method)                                             \
-  Status GrpcDispatcherImpl::method(ServerContext* context,         \
-                                    const method##Request* request, \
-                                    method##Response* response) {   \
-    return ToGrpcStatus(impl_.method(request, response));           \
+Status GrpcDispatcherImpl::Start() { return impl_.Start(); }
+
+#define HANDLER(method)                                                   \
+  grpc::Status GrpcDispatcherImpl::method(ServerContext* context,         \
+                                          const method##Request* request, \
+                                          method##Response* response) {   \
+    return ToGrpcStatus(impl_.method(request, response));                 \
   }
-HANDLER(RegisterWorker);
+HANDLER(WorkerHeartbeat);
 HANDLER(WorkerUpdate);
+HANDLER(GetDatasetDef);
+HANDLER(GetSplit);
 HANDLER(GetOrRegisterDataset);
-HANDLER(CreateJob);
+HANDLER(ReleaseJobClient);
 HANDLER(GetOrCreateJob);
 HANDLER(GetTasks);
 HANDLER(GetWorkers);

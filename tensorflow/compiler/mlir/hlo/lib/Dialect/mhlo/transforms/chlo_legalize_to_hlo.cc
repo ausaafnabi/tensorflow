@@ -13,35 +13,83 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "mlir/Dialect/SCF/SCF.h"  // from @llvm-project
-#include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
-#include "mlir/IR/Attributes.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/OperationSupport.h"  // from @llvm-project
-#include "mlir/IR/PatternMatch.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
-#include "mlir/Transforms/DialectConversion.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/chlo_ops.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/utils/broadcast_utils.h"
+// Enable the use of M_* math constants.
+// NOTE: this must be first in the file to ensure that if cmath is transitively
+// included by any other header it has the define set on first processing.
+// https://docs.microsoft.com/en-us/cpp/c-runtime-library/math-constants
+#define _USE_MATH_DEFINES
+#include <cmath>
+#include <numeric>
+
+#include "mlir-hlo/Dialect/mhlo/IR/chlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/map_chlo_to_hlo_op.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
+#include "mlir-hlo/utils/broadcast_utils.h"
+#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/Shape/IR/Shape.h"
+#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/DialectConversion.h"
 
 namespace mlir {
 namespace chlo {
-
 namespace {
+
+struct ConvertConstantLikeOp : public OpConversionPattern<ConstantLikeOp> {
+  using OpConversionPattern<ConstantLikeOp>::OpConversionPattern;
+  LogicalResult matchAndRewrite(
+      ConstantLikeOp op, ArrayRef<Value> operands,
+      ConversionPatternRewriter &rewriter) const override {
+    auto result_ty = op.getType().cast<ShapedType>();
+
+    // Unranked uses are not supported.  Consider `transform-unranked-hlo`.
+    if (!result_ty.hasRank()) return failure();
+
+    // Lower to MHLO constant if statically shaped.
+    if (result_ty.hasStaticShape()) {
+      rewriter.replaceOpWithNewOp<mhlo::ConstOp>(
+          op, DenseElementsAttr::get(result_ty, op.value()));
+      return success();
+    }
+
+    // Lower to broadcasted constant.
+    ConstantLikeOp::Adaptor transformed(operands);
+    auto loc = op.getLoc();
+    Type extent_tensor_type = shape::getExtentTensorType(op.getContext());
+    Value constant = rewriter.create<mhlo::ConstOp>(loc, op.value());
+    Value uncasted_shape = rewriter.create<shape::ShapeOfOp>(
+        loc, extent_tensor_type, transformed.operand());
+    Type shape_ty =
+        RankedTensorType::get({result_ty.getRank()}, rewriter.getIndexType());
+    Value shape =
+        rewriter.create<tensor::CastOp>(loc, shape_ty, uncasted_shape);
+    rewriter.replaceOpWithNewOp<mhlo::DynamicBroadcastInDimOp>(
+        op, result_ty, constant, shape, rewriter.getI64TensorAttr({}));
+    return success();
+  }
+};
 
 // Converts binary ops that statically are determined to not broadcast directly
 // to the corresponding mhlo non-broadcasting op.
 template <typename ChloOpTy, typename HloOpTy, typename Adaptor>
-struct ConvertTrivialNonBroadcastBinaryOp : public OpRewritePattern<ChloOpTy> {
-  using OpRewritePattern<ChloOpTy>::OpRewritePattern;
-  LogicalResult matchAndRewrite(ChloOpTy op,
-                                PatternRewriter &rewriter) const override {
+struct ConvertTrivialNonBroadcastBinaryOp
+    : public OpConversionPattern<ChloOpTy> {
+  using OpConversionPattern<ChloOpTy>::OpConversionPattern;
+  LogicalResult matchAndRewrite(
+      ChloOpTy op, ArrayRef<Value> operands,
+      ConversionPatternRewriter &rewriter) const override {
     // Only rewrite for statically determinable non-broadcasting cases.
-    auto lhs_type = op.lhs().getType().template dyn_cast<RankedTensorType>();
-    auto rhs_type = op.rhs().getType().template dyn_cast<RankedTensorType>();
+    typename ChloOpTy::Adaptor transformed(operands);
+    auto lhs_type =
+        transformed.lhs().getType().template dyn_cast<RankedTensorType>();
+    auto rhs_type =
+        transformed.rhs().getType().template dyn_cast<RankedTensorType>();
     if (!lhs_type || !rhs_type) return failure();
 
     // Requires rank broadcast.
@@ -59,8 +107,9 @@ struct ConvertTrivialNonBroadcastBinaryOp : public OpRewritePattern<ChloOpTy> {
       }
     }
 
-    rewriter.replaceOp(op, {Adaptor::CreateOp(op, op.getResult().getType(),
-                                              op.lhs(), op.rhs(), rewriter)});
+    rewriter.replaceOp(
+        op, {Adaptor::CreateOp(op, op.getResult().getType(), operands[0],
+                               operands[1], rewriter)});
     return success();
   }
 };
@@ -79,13 +128,15 @@ struct ConvertTrivialNonBroadcastBinaryOp : public OpRewritePattern<ChloOpTy> {
 // `shape.broadcast` op, which only supports prefix-padding.
 template <typename ChloOpTy, typename HloOpTy, typename Adaptor>
 struct ConvertRankedDynamicBroadcastBinaryOp
-    : public OpRewritePattern<ChloOpTy> {
-  using OpRewritePattern<ChloOpTy>::OpRewritePattern;
-  LogicalResult matchAndRewrite(ChloOpTy op,
-                                PatternRewriter &rewriter) const override {
+    : public OpConversionPattern<ChloOpTy> {
+  using OpConversionPattern<ChloOpTy>::OpConversionPattern;
+  LogicalResult matchAndRewrite(
+      ChloOpTy op, ArrayRef<Value> operands,
+      ConversionPatternRewriter &rewriter) const override {
     // Only support ranked operands.
-    Value lhs = op.lhs();
-    Value rhs = op.rhs();
+    typename ChloOpTy::Adaptor transformed(operands);
+    Value lhs = transformed.lhs();
+    Value rhs = transformed.rhs();
     auto lhs_type = lhs.getType().dyn_cast<RankedTensorType>();
     auto rhs_type = rhs.getType().dyn_cast<RankedTensorType>();
     auto result_type =
@@ -125,8 +176,8 @@ struct ConvertRankedDynamicBroadcastBinaryOp
 
     int64_t result_rank = std::max(lhs_type.getRank(), rhs_type.getRank());
     Value result_extents =
-        hlo::ComputeBinaryElementwiseBroadcastingResultExtents(loc, lhs, rhs,
-                                                               rewriter);
+        hlo::ComputeBinaryElementwiseBroadcastingResultExtents(
+            loc, lhs, rhs, rewriter, /*unsafe_as_extent_tensor=*/true);
 
     // Note that we unconditionally emit DynamicBroadcastInDim ops and let
     // downstream canonicalizations fold them away if possible. This is
@@ -159,144 +210,23 @@ struct ConvertRankedDynamicBroadcastBinaryOp
   }
 };
 
-// Converts a broadcasting binary operation with a scalar operand and an
-// unranked operand to a ranked broadcasting operation by dynamically reshaping
-// the unranked operand to a 1D tensor. This will always be safe because
-// broadcasting from a scalar to another shape always works.
-template <typename ChloOpTy, typename HloOpTy>
-struct ConvertUnrankedScalarDynamicBroadcastBinaryOp
-    : public OpRewritePattern<ChloOpTy> {
-  using OpRewritePattern<ChloOpTy>::OpRewritePattern;
-  LogicalResult matchAndRewrite(ChloOpTy op,
-                                PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    Value lhs = op.lhs();
-    Value rhs = op.rhs();
-
-    auto lhs_ranked_type = lhs.getType().dyn_cast<RankedTensorType>();
-    auto lhs_unranked_type = lhs.getType().dyn_cast<UnrankedTensorType>();
-
-    auto rhs_ranked_type = rhs.getType().dyn_cast<RankedTensorType>();
-    auto rhs_unranked_type = rhs.getType().dyn_cast<UnrankedTensorType>();
-
-    bool lhs_is_scalar = lhs_ranked_type &&
-                         lhs_ranked_type.getShape().empty() &&
-                         rhs_unranked_type;
-    bool rhs_is_scalar = rhs_ranked_type &&
-                         rhs_ranked_type.getShape().empty() &&
-                         lhs_unranked_type;
-
-    // Only support the case where exactly one operand is scalar and the other
-    // is unranked. Other patterns in this file will create more efficient
-    // lowerings for cases where both ranks are known or will handle the more
-    // generic case of both inputs being unranked.
-    if (!(lhs_is_scalar ^ rhs_is_scalar)) return failure();
-
-    auto result_type = op.getResult().getType().template dyn_cast<TensorType>();
-
-    // Reshape the non-scalar value into a dynamically sized, rank-1 tensor
-    Value shape =
-        rewriter.create<shape::ShapeOfOp>(loc, lhs_is_scalar ? rhs : lhs);
-    Value num_elements = rewriter.create<shape::NumElementsOp>(loc, shape);
-    Value size = rewriter.create<shape::SizeToIndexOp>(loc, num_elements);
-    Value size_tensor = rewriter.create<TensorFromElementsOp>(loc, size);
-    Value reshaped = rewriter.create<mhlo::DynamicReshapeOp>(
-        loc, RankedTensorType::get({-1}, result_type.getElementType()),
-        lhs_is_scalar ? rhs : lhs, size_tensor);
-
-    // Create a new ranked Chlo op that will be further lowered by other
-    // patterns into Mhlo.
-    SmallVector<Value, 2> operands{lhs_is_scalar ? lhs : reshaped,
-                                   rhs_is_scalar ? rhs : reshaped};
-    Value computed = rewriter.create<ChloOpTy>(
-        loc, SmallVector<Type, 1>{reshaped.getType()}, operands, op.getAttrs());
-
-    // Reshape the result back into an unranked tensor.
-    Value shape_tensor = rewriter.create<shape::ToExtentTensorOp>(
-        loc, RankedTensorType::get({-1}, rewriter.getIndexType()), shape);
-    rewriter.replaceOpWithNewOp<mhlo::DynamicReshapeOp>(op, result_type,
-                                                        computed, shape_tensor);
-
-    return success();
-  }
-};
-
-template <typename ChloOpTy, typename HloOpTy, typename Adaptor>
-void PopulateForBinaryOp(MLIRContext *context,
-                         OwningRewritePatternList *patterns) {
-  patterns
-      ->insert<ConvertTrivialNonBroadcastBinaryOp<ChloOpTy, HloOpTy, Adaptor>>(
-          context, 10);
-  patterns->insert<
-      ConvertRankedDynamicBroadcastBinaryOp<ChloOpTy, HloOpTy, Adaptor>>(
-      context, 5);
-  patterns->insert<
-      ConvertUnrankedScalarDynamicBroadcastBinaryOp<ChloOpTy, HloOpTy>>(
-      context);
-}
-
-template <typename FromOpTy, typename ToOpTy>
-struct HloBinaryElementwiseAdaptor {
-  static ToOpTy CreateOp(FromOpTy from_op, Type result_type,
-                         Value broadcasted_lhs, Value broadcasted_rhs,
-                         OpBuilder &builder) {
-    return builder.create<ToOpTy>(from_op.getLoc(), result_type,
-                                  broadcasted_lhs, broadcasted_rhs);
-  }
-};
-
-struct HloComplexAdaptor {
-  static mhlo::ComplexOp CreateOp(BroadcastComplexOp from_op, Type result_type,
-                                  Value broadcasted_lhs, Value broadcasted_rhs,
-                                  OpBuilder &builder) {
-    return builder.create<mhlo::ComplexOp>(from_op.getLoc(), result_type,
-                                           broadcasted_lhs, broadcasted_rhs);
-  }
-};
-
-struct HloCompareAdaptor {
-  static mhlo::CompareOp CreateOp(BroadcastCompareOp from_op, Type result_type,
-                                  Value broadcasted_lhs, Value broadcasted_rhs,
-                                  OpBuilder &builder) {
-    return builder.create<mhlo::CompareOp>(from_op.getLoc(), result_type,
-                                           broadcasted_lhs, broadcasted_rhs,
-                                           from_op.comparison_direction());
-  }
-};
-
+#include "generated_chlo_legalize_to_hlo.inc"
 }  // namespace
 
 void PopulateLegalizeChloToHloPatterns(MLIRContext *context,
                                        OwningRewritePatternList *patterns) {
+  populateWithGenerated(context, *patterns);
+
   // Instantiate conversion templates for conforming binary elementwise ops
   // that do not have different dtypes between operands and results and do
   // not have special attributes that need to be preserved.
-#define POPULATE_BCAST(ChloOp, HloOp)                                      \
-  PopulateForBinaryOp<ChloOp, HloOp,                                       \
-                      HloBinaryElementwiseAdaptor<ChloOp, HloOp>>(context, \
-                                                                  patterns);
+  PopulateForBroadcastingBinaryOp<ConvertTrivialNonBroadcastBinaryOp>(
+      context, patterns, 10);
+  PopulateForBroadcastingBinaryOp<ConvertRankedDynamicBroadcastBinaryOp>(
+      context, patterns, 5);
 
-  POPULATE_BCAST(BroadcastAddOp, mhlo::AddOp);
-  POPULATE_BCAST(BroadcastAndOp, mhlo::AndOp);
-  POPULATE_BCAST(BroadcastAtan2Op, mhlo::Atan2Op);
-  POPULATE_BCAST(BroadcastDivOp, mhlo::DivOp);
-  POPULATE_BCAST(BroadcastMaxOp, mhlo::MaxOp);
-  POPULATE_BCAST(BroadcastMinOp, mhlo::MinOp);
-  POPULATE_BCAST(BroadcastMulOp, mhlo::MulOp);
-  POPULATE_BCAST(BroadcastOrOp, mhlo::OrOp);
-  POPULATE_BCAST(BroadcastPowOp, mhlo::PowOp);
-  POPULATE_BCAST(BroadcastRemOp, mhlo::RemOp);
-  POPULATE_BCAST(BroadcastShiftLeftOp, mhlo::ShiftLeftOp);
-  POPULATE_BCAST(BroadcastShiftRightArithmeticOp, mhlo::ShiftRightArithmeticOp);
-  POPULATE_BCAST(BroadcastShiftRightLogicalOp, mhlo::ShiftRightLogicalOp);
-  POPULATE_BCAST(BroadcastSubOp, mhlo::SubOp);
-  POPULATE_BCAST(BroadcastXorOp, mhlo::XorOp);
-
-  // Broadcasting ops requiring special construction.
-  PopulateForBinaryOp<BroadcastComplexOp, mhlo::ComplexOp, HloComplexAdaptor>(
-      context, patterns);
-  PopulateForBinaryOp<BroadcastCompareOp, mhlo::CompareOp, HloCompareAdaptor>(
-      context, patterns);
+  // Other patterns.
+  patterns->insert<ConvertConstantLikeOp>(context);
 }
 
 }  // namespace chlo
